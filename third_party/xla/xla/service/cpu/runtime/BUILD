@@ -1,6 +1,8 @@
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 load("//xla:xla.bzl", "xla_cc_test")
 load("//xla/service/cpu:build_defs.bzl", "runtime_copts")
+load("//xla/tsl:tsl.bzl", "internal_visibility")
+load("//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -15,20 +17,47 @@ package_group(
     ],
 )
 
+filegroup(
+    name = "runtime_srcs",
+    srcs = ["conv_impl.cc"],
+    visibility = internal_visibility([":friends"]),
+)
+
+filegroup(
+    name = "runtime_hdrs",
+    srcs = ["conv_impl.h"],
+    visibility = internal_visibility([":friends"]),
+)
+
 cc_library(
     name = "buffer_allocations",
-    srcs = ["buffer_allocations.cc"],
     hdrs = ["buffer_allocations.h"],
     deps = [
+        "//xla:util",
         "//xla/service:buffer_assignment",
         "//xla/service:maybe_owning_device_memory",
         "//xla/stream_executor",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+xla_cc_test(
+    name = "buffer_allocations_test",
+    srcs = ["buffer_allocations_test.cc"],
+    deps = [
+        ":buffer_allocations",
+        "//xla/service:buffer_assignment",
+        "//xla/service:maybe_owning_device_memory",
+        "//xla/stream_executor:device_memory",
+        "@com_google_absl//absl/status",
+        "@local_tsl//tsl/lib/core:status_test_util",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_main",
     ],
 )
 
@@ -44,6 +73,7 @@ cc_library(
     hdrs = ["thunk.h"],
     deps = [
         ":buffer_allocations",
+        ":resource_use",
         "//xla:executable_run_options",
         "//xla/ffi:execution_context",
         "//xla/runtime:buffer_use",
@@ -69,6 +99,7 @@ cc_library(
     testonly = 1,
     hdrs = ["thunk_testlib.h"],
     deps = [
+        ":resource_use",
         ":thunk",
         "//xla/runtime:buffer_use",
         "//xla/tsl/concurrency:async_value",
@@ -94,6 +125,7 @@ cc_library(
     srcs = ["thunk_executor.cc"],
     hdrs = ["thunk_executor.h"],
     deps = [
+        ":resource_use",
         ":thunk",
         "//xla/runtime:buffer_use",
         "//xla/tsl/concurrency:async_value",
@@ -119,6 +151,7 @@ xla_cc_test(
     srcs = ["thunk_executor_test.cc"],
     deps = [
         ":buffer_allocations",
+        ":resource_use",
         ":task",
         ":thunk",
         ":thunk_executor",
@@ -163,6 +196,7 @@ cc_library(
     srcs = ["conditional_thunk.cc"],
     hdrs = ["conditional_thunk.h"],
     deps = [
+        ":resource_use",
         ":thunk",
         ":thunk_executor",
         "//xla:util",
@@ -187,6 +221,7 @@ xla_cc_test(
     deps = [
         ":buffer_allocations",
         ":conditional_thunk",
+        ":resource_use",
         ":thunk",
         ":thunk_testlib",
         "//xla:shape_util",
@@ -236,11 +271,26 @@ cc_library(
 )
 
 cc_library(
+    name = "conv_impl",
+    srcs = ["conv_impl.cc"],
+    hdrs = ["conv_impl.h"],
+    copts = runtime_copts(),
+    visibility = internal_visibility([":friends"]),
+    deps = [
+        "//xla/tsl/framework/contraction:eigen_contraction_kernel",
+        "//xla/tsl/framework/convolution:eigen_helpers",
+        "@eigen_archive//:eigen3",
+        "@local_tsl//tsl/platform:mutex",  # build_cleaner: keep
+    ],
+)
+
+cc_library(
     name = "convolution_thunk",
     srcs = ["convolution_thunk.cc"],
     hdrs = ["convolution_thunk.h"],
     copts = runtime_copts(),
     deps = [
+        ":conv_impl",
         ":thunk",
         "//xla:executable_run_options",
         "//xla:shape_util",
@@ -249,16 +299,17 @@ cc_library(
         "//xla/runtime:buffer_use",
         "//xla/service:buffer_assignment",
         "//xla/service/cpu:runtime_conv2d_acl",
-        "//xla/service/cpu:runtime_conv_impl",
         "//xla/stream_executor:device_memory",
         "//xla/tsl/concurrency:async_value",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
+        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/profiler/lib:traceme",
     ],
@@ -420,6 +471,7 @@ cc_library(
     srcs = ["collective_thunk.cc"],
     hdrs = ["collective_thunk.h"],
     deps = [
+        ":resource_use",
         ":thunk",
         "//xla:shape_util",
         "//xla:status_macros",
@@ -510,6 +562,7 @@ cc_library(
         "//xla/service:custom_call_target_registry",
         "//xla/stream_executor",
         "//xla/tsl/concurrency:async_value",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status:statusor",
@@ -572,6 +625,7 @@ cc_library(
     srcs = ["outfeed_thunk.cc"],
     hdrs = ["outfeed_thunk.h"],
     deps = [
+        ":resource_use",
         ":thunk",
         "//xla:shape_util",
         "//xla:util",
@@ -598,6 +652,7 @@ xla_cc_test(
     deps = [
         ":buffer_allocations",
         ":outfeed_thunk",
+        ":resource_use",
         ":thunk",
         ":thunk_testlib",
         "//xla:shape_util",
@@ -661,6 +716,7 @@ cc_library(
     srcs = ["infeed_thunk.cc"],
     hdrs = ["infeed_thunk.h"],
     deps = [
+        ":resource_use",
         ":thunk",
         "//xla:shape_util",
         "//xla:util",
@@ -687,6 +743,7 @@ xla_cc_test(
     deps = [
         ":buffer_allocations",
         ":infeed_thunk",
+        ":resource_use",
         ":thunk",
         ":thunk_testlib",
         "//xla:shape_util",
@@ -717,14 +774,16 @@ cc_library(
         "//xla/stream_executor/host:host_kernel",
         "//xla/stream_executor/host:host_kernel_c_api",
         "//xla/tsl/concurrency:async_value",
-        "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/numeric:bits",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
+        "@llvm-project//llvm:Support",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:numbers",
@@ -746,8 +805,32 @@ xla_cc_test(
         "//xla/stream_executor/host:host_kernel_c_api",
         "//xla/tsl/concurrency:async_value",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_main",
+    ],
+)
+
+cc_library(
+    name = "resource_use",
+    srcs = ["resource_use.cc"],
+    hdrs = ["resource_use.h"],
+    deps = [
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+xla_cc_test(
+    name = "resource_use_test",
+    srcs = ["resource_use_test.cc"],
+    deps = [
+        ":resource_use",
+        "//xla/service:buffer_assignment",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
     ],
@@ -804,6 +887,7 @@ xla_cc_test(
     srcs = ["while_thunk_test.cc"],
     deps = [
         ":buffer_allocations",
+        ":resource_use",
         ":thunk",
         ":thunk_testlib",
         ":while_thunk",

@@ -1,5 +1,5 @@
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
-load("//tensorflow:tensorflow.bzl", "if_google", "tf_cc_binary")
+load("//tensorflow:tensorflow.bzl", "if_google", "tf_cc_binary", "tf_cc_test")
 
 # Note: keep the following lines separate due to the way copybara works
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
@@ -405,6 +405,19 @@ cc_library(
     ],
 )
 
+tf_cc_test(
+    name = "import_model_test",
+    srcs = [
+        "translate/import_model_test.cc",
+    ],
+    tags = ["no_oss"],
+    deps = [
+        ":import_model",
+        ":tfrt_compile_options",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "tfrt_compile_options",
     srcs = ["translate/tfrt_compile_options.cc"],
@@ -710,7 +723,6 @@ cc_library(
     hdrs = ["utils/export.h"],
     deps = [
         "//tensorflow/compiler/mlir/tensorflow:error_util",
-        "//tensorflow/compiler/mlir/tensorflow:export_graphdef",
         "//tensorflow/compiler/mlir/tensorflow:mlir_roundtrip_flags",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tensorflow_passes",
         "//tensorflow/compiler/mlir/tf2xla/api/v1:tf_dialect_to_executor",

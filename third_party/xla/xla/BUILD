@@ -4,11 +4,16 @@ load(
     "tf_proto_library",
 )
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load(
+    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
+    "if_cuda_is_configured",
+)
 load("//third_party/compute_library:build_defs.bzl", "if_enable_acl")
 
 # Placeholder: load py_proto_library
+load("//xla:package_groups.bzl", "xla_package_groups")
 load("//xla:xla.bzl", "xla_cc_test", "xla_py_proto_library")
-load("//xla/tsl:tsl.bzl", "internal_visibility")
+load("//xla/tsl:tsl.bzl", "if_google", "internal_visibility")
 load("//xla/tsl:tsl.default.bzl", "filegroup", "get_compatible_with_portable")
 
 package(
@@ -17,45 +22,11 @@ package(
     licenses = ["notice"],
 )
 
-package_group(
-    name = "friends",
-    includes = ["//xla:internal"],
-    packages = [
-        # copybara:uncomment "//learning/...",
-        "//third_party/australis/...",
-        "//third_party/iree/...",
-        "//third_party/libxc/...",
-        "//third_party/mira/...",
-        "//third_party/mlcompass/...",
-        "//third_party/mlir_edge/model_curriculum/...",
-        "//third_party/openxla/shardonnay/...",
-        "//third_party/py/enzyme_ad/...",
-        "//third_party/py/jax/...",
-        "//third_party/py/t5x/...",
-        "//third_party/py/tpu_graphs/...",
-        "//tensorflow/compiler/...",
-        "//tensorflow/python/tpu/...",
-    ],
-)
-
-package_group(
-    name = "internal",
-    packages = [
-        "//xla/...",
-    ],
-)
-
-package_group(
-    name = "runtime",
-    packages = [
-        "//xla/runtime/...",
-        "//xla/service/gpu/runtime/...",
-    ],
-)
-
 exports_files([
     "lit.cfg.py",
 ])
+
+xla_package_groups()
 
 # Filegroup used to collect source files for dependency checking.
 filegroup(
@@ -103,7 +74,7 @@ tf_proto_library(
     protodeps = [
         ":xla_data_proto",
         "//xla/service:hlo_proto",
-    ],
+    ] + if_google(["@com_google_protobuf//:any"]),
     visibility = ["//visibility:public"],
 )
 
@@ -304,9 +275,7 @@ cc_library(
     deprecation = "Use @com_google_absl//absl/status instead.",
     visibility = ["//visibility:public"],
     deps = [
-        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
     ],
 )
 
@@ -323,6 +292,29 @@ cc_library(
     deps = [
         "@com_google_absl//absl/status",
         "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+cc_library(
+    name = "fp_util",
+    hdrs = ["fp_util.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":types",
+        ":util",
+    ],
+)
+
+xla_cc_test(
+    name = "fp_util_test",
+    srcs = ["fp_util_test.cc"],
+    deps = [
+        ":fp_util",
+        ":test",
+        ":util",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/numeric:bits",
+        "@local_tsl//tsl/platform:test_main",
     ],
 )
 
@@ -1101,6 +1093,7 @@ cc_library(
     ],
     hdrs = ["debug_options_flags.h"],
     copts = if_enable_acl(["-DXLA_CPU_USE_ACL=1"]),
+    local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]),
     visibility = internal_visibility([":friends"]),
     deps =
         [
@@ -1209,7 +1202,40 @@ tf_proto_library(
     name = "autotuning_proto",
     srcs = ["autotuning.proto"],
     make_default_target_header_only = True,
-    protodeps = ["@local_tsl//tsl/protobuf:dnn_proto"],
+    protodeps = [
+        "@local_tsl//tsl/protobuf:dnn_proto",
+    ] + if_google([
+        "@com_google_protobuf//:any",
+        "@com_google_protobuf//:duration",
+    ]),
+)
+
+cc_library(
+    name = "autotune_result_wrapper",
+    srcs = ["autotune_result_wrapper.cc"],
+    hdrs = ["autotune_result_wrapper.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":autotune_results_proto_cc",
+        ":autotuning_proto_cc",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@local_tsl//tsl/lib/strings:proto_serialization",
+    ],
+)
+
+xla_cc_test(
+    name = "autotune_result_wrapper_test",
+    srcs = ["autotune_result_wrapper_test.cc"],
+    deps = [
+        ":autotune_result_wrapper",
+        ":autotuning_proto_cc",
+        ":test",
+        ":test_helpers",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test_main",
+    ],
 )
 
 cc_library(

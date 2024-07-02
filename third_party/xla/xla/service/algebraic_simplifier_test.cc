@@ -71,6 +71,177 @@ class AlgebraicSimplifierTest : public HloTestBase {
   AlgebraicSimplifierOptions default_options_;
 };
 
+// clang-format off
+const char* non_neg_ops[] = {"abs(p0)",
+                             "constant(0.0)",
+                             "constant(0.1)",
+                             "constant(inf)",
+                             "exponential(p0)",
+                             "maximum(p0, a1)",
+                             "maximum(a1, p0)",
+                             "minimum(a0, a1)",
+                             "multiply(p0, p0)",
+                             "power(a0, p1)",
+                             "select(pred0, a0, a1)",
+                             "select(pred0, a1, a0)"};
+
+const char* arb_sing_ops[] = {"constant(-0.1)",
+                              "constant(-inf)",
+                              "constant(nan)",
+                              "cosine(p0)",
+                              "custom-call(a1), custom_call_target=\"foobar\"",
+                              "maximum(p0, p1)",
+                              "maximum(p1, p0)",
+                              "minimum(a0, p1)",
+                              "minimum(p0, a1)",
+                              "minimum(p0, p1)",
+                              "multiply(p0, a1)",
+                              "multiply(a1, p0)",
+                              "negate(p0)",
+                              "power(p0, p1)",
+                              "select(pred0, a1, p0)",
+                              "select(pred0, p0, a1)"};
+// clang-format on
+
+// Test that the result of particular oprations is always non-negative
+TEST_F(AlgebraicSimplifierTest, IsNonNegative_Op) {
+  for (const auto* op : non_neg_ops) {
+    const auto kModuleStr = absl::StrFormat(R"(
+      HloModule m
+      test {
+        p0 = f32[] parameter(0)
+        a0 = f32[] abs(p0)
+        p1 = f32[] parameter(1)
+        a1 = f32[] abs(p1)
+        pred0 = pred[] parameter(2)
+        ROOT y = f32[] %s
+      }
+    )",
+                                            op);
+    TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+    ASSERT_TRUE(AlgebraicSimplifierVisitor::IsNonNegative(
+        m->entry_computation()->root_instruction(), default_options_));
+  }
+}
+
+// Test that the result of particular oprations might be negative
+TEST_F(AlgebraicSimplifierTest, IsNonNegative_Op_NegativeTestCase) {
+  for (const auto op : arb_sing_ops) {
+    const auto kModuleStr = absl::StrFormat(R"(
+      HloModule m
+      test {
+        p0 = f32[] parameter(0)
+        a0 = f32[] abs(p0)
+        p1 = f32[] parameter(1)
+        a1 = f32[] abs(p1)
+        pred0 = pred[] parameter(2)
+        ROOT y = f32[] %s
+      }
+    )",
+                                            op);
+    TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+    ASSERT_FALSE(AlgebraicSimplifierVisitor::IsNonNegative(
+        m->entry_computation()->root_instruction(), default_options_));
+  }
+}
+
+// Test that the result of Broadcast is non-negative if its operand is
+// non-negative
+TEST_F(AlgebraicSimplifierTest, IsNonNegative_Broadcast) {
+  for (const auto op : non_neg_ops) {
+    const auto kModuleStr = absl::StrFormat(R"(
+      HloModule m
+      test {
+        p0 = f32[] parameter(0)
+        a0 = f32[] abs(p0)
+        p1 = f32[] parameter(1)
+        a1 = f32[] abs(p1)
+        pred0 = pred[] parameter(2)
+        y = f32[] %s
+        ROOT b = f32[4,8] broadcast(y), dimensions={}
+      }
+    )",
+                                            op);
+    TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+    ASSERT_TRUE(AlgebraicSimplifierVisitor::IsNonNegative(
+        m->entry_computation()->root_instruction(), default_options_));
+  }
+}
+
+// Test that the result of Broadcast might be negative if its oprand is
+// not non-negative
+TEST_F(AlgebraicSimplifierTest, IsNonNegative_Broadcast_NegativeTestCase) {
+  for (const auto op : arb_sing_ops) {
+    const auto kModuleStr = absl::StrFormat(R"(
+      HloModule m
+      test {
+        p0 = f32[] parameter(0)
+        a0 = f32[] abs(p0)
+        p1 = f32[] parameter(1)
+        a1 = f32[] abs(p1)
+        pred0 = pred[] parameter(2)
+        y = f32[] %s
+        ROOT b = f32[4,8] broadcast(y), dimensions={}
+      }
+    )",
+                                            op);
+    TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+    ASSERT_FALSE(AlgebraicSimplifierVisitor::IsNonNegative(
+        m->entry_computation()->root_instruction(), default_options_));
+  }
+}
+
+// Test that the result #2 of custom-call batchNormalizationForwardTraining is
+// non-negative
+TEST_F(AlgebraicSimplifierTest,
+       IsNonNegative_CustomCall_BatchNormalizationForwardTraining) {
+  const auto kModuleStr = R"(
+    HloModule m
+    test {
+      p0 = f32[128,32,2,112] parameter(0)
+      p1 = f32[32] parameter(1)
+      p2 = f32[32] parameter(2)
+      c0 = f32[] constant(0.001)
+      c1 = s64[] constant(1)
+      cc0 = (f32[128,32,2,112], f32[32], f32[32]) custom-call(p0, p1, p2, c0, c1), custom_call_target="__cudnn$batchNormalizationForwardTraining"
+      ROOT t2 = f32[32] get-tuple-element(cc0), index=2
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+  default_options_.set_cudnn_batchnorm_forward_training_metadata(
+      "__cudnn$batchNormalizationForwardTraining");
+  ASSERT_TRUE(AlgebraicSimplifierVisitor::IsNonNegative(
+      m->entry_computation()->root_instruction(), default_options_));
+}
+
+// Test that the results #0 and #1 of custom-call
+// batchNormalizationForwardTraining can have arbitrary sign
+TEST_F(
+    AlgebraicSimplifierTest,
+    IsNonNegative_CustomCall_BatchNormalizationForwardTraining_NegativeTestCase_index1) {  // NOLINT(whitespace/line_length)
+  for (const auto op : {"f32[128,32,2,112] get-tuple-element(cc0), index=0",
+                        "f32[32] get-tuple-element(cc0), index=1"}) {
+    const auto kModuleStr = absl::StrFormat(R"(
+      HloModule m
+      test {
+        p0 = f32[128,32,2,112] parameter(0)
+        p1 = f32[32] parameter(1)
+        p2 = f32[32] parameter(2)
+        c0 = f32[] constant(0.001)
+        c1 = s64[] constant(1)
+        cc0 = (f32[128,32,2,112], f32[32], f32[32]) custom-call(p0, p1, p2, c0, c1), custom_call_target="__cudnn$batchNormalizationForwardTraining"
+        ROOT t1 = %s
+      }
+    )",
+                                            op);
+    TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+    default_options_.set_cudnn_batchnorm_forward_training_metadata(
+        "__cudnn$batchNormalizationForwardTraining");
+    ASSERT_FALSE(AlgebraicSimplifierVisitor::IsNonNegative(
+        m->entry_computation()->root_instruction(), default_options_));
+  }
+}
+
 // Test that A + 0 is simplified to A
 TEST_F(AlgebraicSimplifierTest, AddZero) {
   auto m = CreateNewVerifiedModule();
@@ -734,6 +905,95 @@ TEST_F(AlgebraicSimplifierTest, SelectPredPred2) {
   ASSERT_TRUE(simplifier.Run(module.get()).value());
   EXPECT_THAT(computation->root_instruction(),
               GmockMatch(m::Not(m::Parameter(0))));
+}
+
+// select(compare(a, b, GT/GE), a, b) => or(a, b),   a,b ∈ PRED
+TEST_F(AlgebraicSimplifierTest, SelectGtCompare) {
+  for (const auto cmp_dir : {"GT", "GE"}) {
+    const auto kModuleStr = absl::StrFormat(R"(
+      HloModule m
+      test {
+        p0 = pred[8]{0} parameter(0)
+        p1 = pred[8]{0} parameter(1)
+        compare = pred[8]{0} compare(p0, p1), direction=%s
+        ROOT select = pred[8]{0} select(compare, p0, p1)
+      }
+    )",
+                                            cmp_dir);
+    TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+    ASSERT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+    EXPECT_THAT(m->entry_computation()->root_instruction(),
+                GmockMatch(m::Or(m::Parameter(0), m::Parameter(1))));
+  }
+}
+
+// select(compare(a, b, LT/LE), a, b) => and(a, b),   a,b ∈ PRED
+TEST_F(AlgebraicSimplifierTest, SelectLtCompare) {
+  for (const auto cmp_dir : {"LT", "LE"}) {
+    const auto kModuleStr = absl::StrFormat(R"(
+      HloModule m
+      test {
+        p0 = pred[8]{0} parameter(0)
+        p1 = pred[8]{0} parameter(1)
+        compare = pred[8]{0} compare(p0, p1), direction=%s
+        ROOT select = pred[8]{0} select(compare, p0, p1)
+      }
+    )",
+                                            cmp_dir);
+    TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+    ASSERT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+    EXPECT_THAT(m->entry_computation()->root_instruction(),
+                GmockMatch(m::And(m::Parameter(0), m::Parameter(1))));
+  }
+}
+
+// select(compare(a, b, EQ), a, b) => b,   a,b ∈ PRED
+TEST_F(AlgebraicSimplifierTest, SelectEqCompare) {
+  const char* kModuleStr = R"(
+    HloModule m
+    test {
+      p0 = pred[8]{0} parameter(0)
+      p1 = pred[8]{0} parameter(1)
+      compare = pred[8]{0} compare(p0, p1), direction=EQ
+      ROOT select = pred[8]{0} select(compare, p0, p1)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+  ASSERT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  EXPECT_THAT(m->entry_computation()->root_instruction(),
+              GmockMatch(m::Parameter(1)));
+}
+
+// select(compare(a, b, NE), a, b) => a,   a,b ∈ PRED
+TEST_F(AlgebraicSimplifierTest, SelectNeCompare) {
+  const char* kModuleStr = R"(
+    HloModule m
+    test {
+      p0 = pred[8]{0} parameter(0)
+      p1 = pred[8]{0} parameter(1)
+      compare = pred[8]{0} compare(p0, p1), direction=NE
+      ROOT select = pred[8]{0} select(compare, p0, p1)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+  ASSERT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  EXPECT_THAT(m->entry_computation()->root_instruction(),
+              GmockMatch(m::Parameter(0)));
+}
+
+// select(compare(a, b, NE), b, a) ≠> a - wrong operands order
+TEST_F(AlgebraicSimplifierTest, SelectNeCompare_NegativeTestCase) {
+  const char* kModuleStr = R"(
+    HloModule m
+    test {
+      p0 = pred[8]{0} parameter(0)
+      p1 = pred[8]{0} parameter(1)
+      compare = pred[8]{0} compare(p0, p1), direction=NE
+      ROOT select = pred[8]{0} select(compare, p1, p0)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kModuleStr));
+  ASSERT_FALSE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
 }
 
 // Test that select(pred, xs, dynamic_update_slice(xs, x, i)) is simplified

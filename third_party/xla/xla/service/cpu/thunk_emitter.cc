@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "xla/service/cpu/thunk_emitter.h"
 
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,6 +57,7 @@ limitations under the License.
 #include "xla/service/cpu/runtime/logical_id_thunk.h"
 #include "xla/service/cpu/runtime/outfeed_thunk.h"
 #include "xla/service/cpu/runtime/reduce_scatter_thunk.h"
+#include "xla/service/cpu/runtime/resource_use.h"
 #include "xla/service/cpu/runtime/rng_state_thunk.h"
 #include "xla/service/cpu/runtime/thunk.h"
 #include "xla/service/cpu/runtime/while_thunk.h"
@@ -77,7 +80,9 @@ ThunkEmitter::ThunkEmitter(IrEmitter2& ir_emitter,
     : ir_emitter_(ir_emitter),
       buffer_assignment_(buffer_assignment),
       target_machine_features_(target_machine_features),
-      hlo_module_config_(hlo_module_config) {}
+      hlo_module_config_(hlo_module_config),
+      communicator_resource_(
+          Resource::Create(Resource::kCollectiveCommunicator)) {}
 
 static Thunk::Info ThunkInfo(const HloInstruction* instruction) {
   const HloModule* module = instruction->GetModule();
@@ -96,6 +101,17 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitEntryComputation(
 absl::StatusOr<BufferAllocation::Slice> ThunkEmitter::GetAllocationSlice(
     const HloInstruction* instruction, const ShapeIndex& index) {
   return buffer_assignment_.GetUniqueSlice(instruction, index);
+}
+
+absl::StatusOr<std::shared_ptr<Resource>> ThunkEmitter::GetTokenResource(
+    const HloInstruction* instruction, const ShapeIndex& index) {
+  DCHECK(ShapeUtil::GetSubshape(instruction->shape(), index).IsToken());
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice slice,
+                      GetAllocationSlice(instruction, index));
+  if (auto it = token_resources_.find(slice); it != token_resources_.end()) {
+    return it->second;
+  }
+  return token_resources_[slice] = Resource::Create(Resource::kToken);
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitHloComputation(
@@ -191,6 +207,7 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitHloInstruction(
     case HloOpcode::kPopulationCount:
     case HloOpcode::kPower:
     case HloOpcode::kReal:
+    case HloOpcode::kReducePrecision:
     case HloOpcode::kRemainder:
     case HloOpcode::kReverse:
     case HloOpcode::kRoundNearestAfz:
@@ -375,9 +392,11 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitAllGatherThunk(
                       GetCollectiveOpParams(all_gather));
   TF_ASSIGN_OR_RETURN(AllGatherThunk::OpBuffers op_buffers,
                       GetCollectiveOpBuffers(all_gather, buffer_assignment_));
+  AllGatherThunk::OpResources op_resources = {communicator_resource_};
 
   return ThunkSequence::Of<AllGatherThunk>(
-      ThunkInfo(all_gather), std::move(op_params), std::move(op_buffers));
+      ThunkInfo(all_gather), std::move(op_params), std::move(op_buffers),
+      std::move(op_resources));
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitAllReduceThunk(
@@ -390,13 +409,14 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitAllReduceThunk(
                       GetCollectiveOpParams(all_reduce));
   TF_ASSIGN_OR_RETURN(AllReduceThunk::OpBuffers op_buffers,
                       GetCollectiveOpBuffers(all_reduce, buffer_assignment_));
+  AllReduceThunk::OpResources op_resources = {communicator_resource_};
 
   bool single_replica = hlo_module_config_.replica_count() == 1 &&
                         hlo_module_config_.num_partitions() == 1;
 
   return ThunkSequence::Of<AllReduceThunk>(
       ThunkInfo(all_reduce), reduction_kind, std::move(op_params),
-      std::move(op_buffers), single_replica);
+      std::move(op_buffers), std::move(op_resources), single_replica);
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitAllToAllThunk(
@@ -407,9 +427,11 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitAllToAllThunk(
                       GetCollectiveOpParams(all_to_all));
   TF_ASSIGN_OR_RETURN(AllToAllThunk::OpBuffers op_buffers,
                       GetCollectiveOpBuffers(all_to_all, buffer_assignment_));
+  AllToAllThunk::OpResources op_resources = {communicator_resource_};
 
   return ThunkSequence::Of<AllToAllThunk>(
-      ThunkInfo(all_to_all), std::move(op_params), std::move(op_buffers));
+      ThunkInfo(all_to_all), std::move(op_params), std::move(op_buffers),
+      std::move(op_resources));
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitCollectivePermuteThunk(
@@ -421,10 +443,12 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitCollectivePermuteThunk(
   TF_ASSIGN_OR_RETURN(
       CollectivePermuteThunk::OpBuffers op_buffers,
       GetCollectiveOpBuffers(collective_permute, buffer_assignment_));
+  CollectivePermuteThunk::OpResources op_resources = {communicator_resource_};
 
   return ThunkSequence::Of<CollectivePermuteThunk>(
       ThunkInfo(collective_permute), std::move(op_params),
-      std::move(op_buffers), collective_permute->source_target_pairs());
+      std::move(op_buffers), std::move(op_resources),
+      collective_permute->source_target_pairs());
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitReduceScatterThunk(
@@ -438,10 +462,11 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitReduceScatterThunk(
   TF_ASSIGN_OR_RETURN(
       ReduceScatterThunk::OpBuffers op_buffers,
       GetCollectiveOpBuffers(reduce_scatter, buffer_assignment_));
+  ReduceScatterThunk::OpResources op_resources = {communicator_resource_};
 
   return ThunkSequence::Of<ReduceScatterThunk>(
       ThunkInfo(reduce_scatter), reduction_kind, std::move(op_params),
-      std::move(op_buffers));
+      std::move(op_buffers), std::move(op_resources));
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitCallThunk(
@@ -582,7 +607,15 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitInfeedThunk(
     });
   }
 
-  return ThunkSequence::Of<InfeedThunk>(ThunkInfo(instruction), infeed_buffers);
+  // Collect resources for consumed and produced tokens.
+  InfeedThunk::InfeedResources infeed_resources;
+  TF_ASSIGN_OR_RETURN(infeed_resources.consume_token,
+                      GetTokenResource(infeed->operand(0)));
+  TF_ASSIGN_OR_RETURN(infeed_resources.produce_token,
+                      GetTokenResource(infeed, {1}));
+
+  return ThunkSequence::Of<InfeedThunk>(ThunkInfo(instruction), infeed_buffers,
+                                        std::move(infeed_resources));
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitOutfeedThunk(
@@ -604,8 +637,15 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitOutfeedThunk(
     });
   }
 
-  return ThunkSequence::Of<OutfeedThunk>(ThunkInfo(instruction),
-                                         outfeed_buffers);
+  // Collect resources for consumed and produced tokens.
+  OutfeedThunk::OutfeedResources outfeed_resources;
+  TF_ASSIGN_OR_RETURN(outfeed_resources.consume_token,
+                      GetTokenResource(outfeed->operand(1)));
+  TF_ASSIGN_OR_RETURN(outfeed_resources.produce_token,
+                      GetTokenResource(outfeed));
+
+  return ThunkSequence::Of<OutfeedThunk>(
+      ThunkInfo(instruction), outfeed_buffers, std::move(outfeed_resources));
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitConditionThunk(
@@ -793,7 +833,7 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitCustomCallThunk(
         CustomCallApiVersion_Name(version));
   }
 
-  // Get backend config and buffer assignments.ß
+  // Get backend config and buffer assignments.
   auto backend_config = custom_call->opaque();
   TF_ASSIGN_OR_RETURN(auto op_buffers,
                       GetCustomCallOpBuffers(instruction, buffer_assignment_));

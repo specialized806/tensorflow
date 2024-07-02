@@ -68,6 +68,7 @@ limitations under the License.
 #include "xla/service/cpu/elemental_math_emitter.h"
 #include "xla/service/cpu/ir_emission_utils.h"
 #include "xla/service/cpu/ir_function.h"
+#include "xla/service/cpu/onednn_config.pb.h"
 #include "xla/service/cpu/parallel_loop_emitter.h"
 #include "xla/service/elemental_ir_emitter.h"
 #include "xla/service/hlo_module_config.h"
@@ -335,12 +336,13 @@ absl::Status IrEmitter::EmitConstantGlobals() {
 
     const Literal& literal = llvm_ir::LiteralForConstantAllocation(allocation);
     llvm::Constant* global_for_const;
-    auto it = emitted_literals_.find(&literal);
+    auto it = emitted_literals_.find(LayoutSensitiveLiteralWrapper{literal});
     if (it != emitted_literals_.end()) {
       global_for_const = it->second;
     } else {
       global_for_const = EmitGlobalForLiteral(literal);
-      InsertOrDie(&emitted_literals_, &literal, global_for_const);
+      InsertOrDie(&emitted_literals_, LayoutSensitiveLiteralWrapper{literal},
+                  global_for_const);
     }
 
     InsertOrDie(&constant_buffer_to_global_, allocation.index(),

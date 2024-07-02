@@ -203,41 +203,6 @@ static bool IsScalarConstantInf(const HloInstruction* hlo) {
                           LiteralUtil::MaxValue(hlo->shape().element_type()));
 }
 
-bool IsNonNegative(const HloInstruction* hlo,
-                   const AlgebraicSimplifierOptions& options) {
-  // Utility only handles real types.
-  if (IsAnyOperandComplex(hlo)) {
-    return false;
-  }
-  switch (hlo->opcode()) {
-    case HloOpcode::kMultiply: {
-      return hlo->operand(0) == hlo->operand(1);
-    }
-    case HloOpcode::kAbs: {
-      return true;
-    }
-    case HloOpcode::kBroadcast: {
-      return IsNonNegative(hlo->operand(0), options);
-    }
-    case HloOpcode::kConstant: {
-      if (std::optional<double> value = GetConstantValue(hlo)) {
-        return *value >= 0.0;
-      }
-      return false;
-    }
-    case HloOpcode::kMaximum: {
-      return IsNonNegative(hlo->operand(0), options) ||
-             IsNonNegative(hlo->operand(1), options);
-    }
-    case HloOpcode::kSelect: {
-      return IsNonNegative(hlo->operand(1), options) &&
-             IsNonNegative(hlo->operand(2), options);
-    }
-    default:
-      return IsPositive(hlo, options);
-  }
-}
-
 // Checks whether `op` is a floating-point constant or broadcast of a constant
 // of the form +/- 2^k for some integer k positive, negative, or zero.  Such
 // values are interesting because multiplying by a power of 2 just moves the
@@ -504,6 +469,49 @@ int64_t GetReduceFlops(const HloInstruction* reduce) {
 }
 
 }  // namespace
+
+bool AlgebraicSimplifierVisitor::IsNonNegative(
+    const HloInstruction* hlo, const AlgebraicSimplifierOptions& options) {
+  // Utility only handles real types.
+  if (IsAnyOperandComplex(hlo)) {
+    return false;
+  }
+  switch (hlo->opcode()) {
+    case HloOpcode::kMultiply: {
+      return hlo->operand(0) == hlo->operand(1);
+    }
+    case HloOpcode::kAbs:
+    case HloOpcode::kExp: {
+      return true;
+    }
+    case HloOpcode::kBroadcast: {
+      return IsNonNegative(hlo->operand(0), options);
+    }
+    case HloOpcode::kConstant: {
+      if (std::optional<double> value = GetConstantValue(hlo)) {
+        return *value >= 0.0;
+      }
+      return false;
+    }
+    case HloOpcode::kMinimum: {
+      return IsNonNegative(hlo->operand(0), options) &&
+             IsNonNegative(hlo->operand(1), options);
+    }
+    case HloOpcode::kMaximum: {
+      return IsNonNegative(hlo->operand(0), options) ||
+             IsNonNegative(hlo->operand(1), options);
+    }
+    case HloOpcode::kPower: {
+      return IsNonNegative(hlo->operand(0), options);
+    }
+    case HloOpcode::kSelect: {
+      return IsNonNegative(hlo->operand(1), options) &&
+             IsNonNegative(hlo->operand(2), options);
+    }
+    default:
+      return IsPositive(hlo, options);
+  }
+}
 
 void AlgebraicSimplifierVisitor::ResetState(HloComputation* computation) {
   ResetVisitStates();
@@ -8187,6 +8195,33 @@ absl::Status AlgebraicSimplifierVisitor::HandleSelect(HloInstruction* select) {
           select, HloInstruction::CreateUnary(
                       select->mutable_operand(0)->shape(), HloOpcode::kNot,
                       select->mutable_operand(0)));
+    }
+    // select(compare(a, b, GT/GE), a, b) => or(a, b)
+    // select(compare(a, b, LT/LE), a, b) => and(a, b)
+    // select(compare(a, b, EQ), a, b) => b
+    // select(compare(a, b, NE), a, b) => a
+    HloInstruction *compare, *lhs, *rhs;
+    if (Match(select, m::Select(m::Op(&compare), m::Op(&lhs), m::Op(&rhs))) &&
+        Match(compare, m::Compare(m::Op().Is(lhs), m::Op().Is(rhs)))) {
+      auto cmp_dir = compare->comparison_direction();
+      if (cmp_dir == ComparisonDirection::kGt ||
+          cmp_dir == ComparisonDirection::kGe) {
+        return ReplaceWithNewInstruction(
+            select, HloInstruction::CreateBinary(select->shape(),
+                                                 HloOpcode::kOr, lhs, rhs));
+      }
+      if (cmp_dir == ComparisonDirection::kLt ||
+          cmp_dir == ComparisonDirection::kLe) {
+        return ReplaceWithNewInstruction(
+            select, HloInstruction::CreateBinary(select->shape(),
+                                                 HloOpcode::kAnd, lhs, rhs));
+      }
+      if (cmp_dir == ComparisonDirection::kEq) {
+        return ReplaceInstruction(select, rhs);
+      }
+      if (cmp_dir == ComparisonDirection::kNe) {
+        return ReplaceInstruction(select, lhs);
+      }
     }
   }
 
