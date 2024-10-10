@@ -50,6 +50,24 @@ _XLA_DEFAULT_TARGET_PATTERNS = (
     "//build_tools/...",
     "@local_tsl//tsl/...",
 )
+_KOKORO_ARTIFACTS_DIR = os.environ.get(
+    "KOKORO_ARTIFACTS_DIR", "$KOKORO_ARTIFACTS_DIR"
+)
+
+
+def retry(
+    args: List[str], delay_seconds: int = 15, retries: int = 3
+) -> List[str]:
+  # Possibly a slight abuse of `parallel` as nothing happens in parallel, just
+  # retries with delay if the command fails.
+  # pyformat:disable
+  return [
+      "parallel", "--ungroup",
+      "--retries", str(retries),
+      "--delay", str(delay_seconds),
+      "--nonall",
+      "--", *args,
+  ]
 
 
 def sh(args, check=True, **kwargs):
@@ -68,10 +86,13 @@ def _write_to_sponge_config(key, value) -> None:
 
 
 class BuildType(enum.Enum):
+  """Enum representing all types of builds."""
   CPU_X86 = enum.auto()
   CPU_ARM64 = enum.auto()
   GPU = enum.auto()
   GPU_CONTINUOUS = enum.auto()
+
+  MACOS_CPU_X86 = enum.auto()
 
   JAX_CPU = enum.auto()
   JAX_GPU = enum.auto()
@@ -96,8 +117,14 @@ class Build:
   options: Dict[str, Any] = dataclasses.field(default_factory=dict)
   extra_setup_commands: Tuple[List[str], ...] = ()
 
-  def bazel_test_command(self) -> List[str]:
+  def bazel_command(
+      self, subcommand: str = "test", extra_options: Tuple[str, ...] = ()
+  ) -> List[str]:
     """Returns a bazel test command for this build.
+
+    Args:
+      subcommand: The subcommand to give to bazel. `test` by default.
+      extra_options: Extra options. For now just used to pass in `--nobuild`.
 
     Returns: List of command line arguments
     """
@@ -111,8 +138,15 @@ class Build:
     test_env = [f"--test_env={k}={v}" for k, v in self.test_env.items()]
 
     tag_filters = [build_tag_filters, test_tag_filters]
-    all_options = tag_filters + configs + action_env + test_env + options
-    return ["bazel", "test", *all_options, "--", *self.target_patterns]
+    all_options = (
+        tag_filters
+        + configs
+        + action_env
+        + test_env
+        + options
+        + list(extra_options)
+    )
+    return ["bazel", subcommand, *all_options, "--", *self.target_patterns]
 
   def docker_run_command(self, *, command: str, **kwargs: Any) -> List[str]:
     assert self.image_url, "`docker run` has no meaning without an image."
@@ -123,7 +157,10 @@ class Build:
   def commands(self) -> List[List[str]]:
     """Returns list of commands for a build."""
     cmds = []
-    cmds.append(["./github/xla/.kokoro/generate_index_html.sh", "index.html"])
+    cmds.append([
+        f"{_KOKORO_ARTIFACTS_DIR}/github/xla/.kokoro/generate_index_html.sh",
+        "index.html",
+    ])
     if self.repo != "openxla/xla":
       _, repo_name = self.repo.split("/")
 
@@ -138,15 +175,12 @@ class Build:
 
     # pyformat:disable
 
-    if self.type_ == BuildType.CPU_ARM64:
+    if self.type_ == BuildType.CPU_ARM64 and using_docker:
       # We would need to install parallel, but `apt` hangs regularly on Kokoro
       # VMs due to yaqs/eng/q/4506961933928235008
       cmds.append(["docker", "pull", self.image_url])
     elif using_docker:
-      # This is a slightly odd use of parallel, we aren't doing anything besides
-      # retrying after 15 seconds up to 3 times if `docker pull` fails.
-      cmds.append(["parallel", "--ungroup", "--retries", "3", "--delay", "15",
-                   "docker", "pull", ":::", self.image_url])
+      cmds.append(retry(["docker", "pull", self.image_url]))
 
     container_name = "xla_ci"
     _, repo_name = self.repo.split("/")
@@ -164,7 +198,17 @@ class Build:
     maybe_docker_exec = (
         ["docker", "exec", container_name] if using_docker else []
     )
-    cmds.append(maybe_docker_exec + self.bazel_test_command())
+
+    # We really want `bazel fetch` here, but it uses `bazel query` and not
+    # `cquery`, which means that it fails due to config issues that aren't
+    # problems in practice.
+    cmds.append(
+        maybe_docker_exec
+        + retry(
+            self.bazel_command(subcommand="build", extra_options=("--nobuild",))
+        )
+    )
+    cmds.append(maybe_docker_exec + self.bazel_command())
     cmds.append(
         maybe_docker_exec + ["bazel", "analyze-profile", "profile.json.gz"]
     )
@@ -204,17 +248,16 @@ def nvidia_gpu_build_with_compute_capability(
       image_url=_DEFAULT_IMAGE,
       target_patterns=_XLA_DEFAULT_TARGET_PATTERNS,
       configs=configs,
-      test_tag_filters=("-no_oss", "requires-gpu-nvidia", "gpu")
+      test_tag_filters=("-no_oss", "requires-gpu-nvidia", "gpu", "-rocm-only")
       + extra_gpu_tags,
-      build_tag_filters=("-no_oss", "requires-gpu-nvidia", "gpu"),
-      options=dict(
-          run_under="//tools/ci_build/gpu_build:parallel_gpu_execute",
-          repo_env=f"TF_CUDA_COMPUTE_CAPABILITIES={compute_capability/10}",
+      build_tag_filters=("-no_oss", "requires-gpu-nvidia", "gpu", "-rocm-only"),
+      options={
+          "run_under": "//tools/ci_build/gpu_build:parallel_gpu_execute",
+          "repo_env": f"TF_CUDA_COMPUTE_CAPABILITIES={compute_capability/10}",
+          "@cuda_driver//:enable_forward_compatibility": "true",
           **_DEFAULT_BAZEL_OPTIONS,
-      ),
-      extra_setup_commands=(
-          ["nvidia-smi"],
-      ),
+      },
+      extra_setup_commands=(["nvidia-smi"],),
   )
 
 
@@ -257,6 +300,49 @@ _GPU_BUILD = nvidia_gpu_build_with_compute_capability(
     type_=BuildType.GPU,
     configs=("warnings", "rbe_linux_cuda_nvcc"),
     compute_capability=75,
+)
+
+macos_tag_filter = (
+    "-no_oss",
+    "-gpu",
+    "-no_mac",
+    "-mac_excluded",
+    "-requires-gpu-nvidia",
+    "-requires-gpu-amd",
+)
+
+_MACOS_X86_BUILD = Build(
+    type_=BuildType.MACOS_CPU_X86,
+    repo="openxla/xla",
+    image_url=None,
+    configs=("nonccl",),
+    target_patterns=(
+        "//xla/...",
+        "-//xla/hlo/experimental/...",
+        "-//xla/python_api/...",
+        "-//xla/python/...",
+        "-//xla/service/gpu/...",
+    ),
+    options=dict(
+        **_DEFAULT_BAZEL_OPTIONS,
+        macos_minimum_os="10.15",
+        test_tmpdir="/Volumes/BuildData/bazel_output",
+    ),
+    build_tag_filters=macos_tag_filter,
+    test_tag_filters=macos_tag_filter,
+    extra_setup_commands=(
+        [
+            "sudo",
+            "wget",
+            "--no-verbose",
+            "-O",
+            "/usr/local/bin/bazel",
+            "https://github.com/bazelbuild/bazelisk/releases/download/v1.11.0/bazelisk-darwin-amd64",
+        ],
+        ["chmod", "+x", "/usr/local/bin/bazel"],
+        ["bazel", "--version"],  # Sanity check due to strange failures
+        ["mkdir", "-p", "/Volumes/BuildData/bazel_output"],
+    ),
 )
 
 _JAX_CPU_BUILD = Build(
@@ -359,6 +445,7 @@ _KOKORO_JOB_NAME_TO_BUILD_MAP = {
     "tensorflow/xla/linux/github_continuous/arm64/build_cpu": _CPU_ARM64_BUILD,
     "tensorflow/xla/linux/github_continuous/build_gpu": _GPU_BUILD,
     "tensorflow/xla/linux/github_continuous/build_cpu": _CPU_X86_BUILD,
+    "tensorflow/xla/macos/github_continuous/cpu_py39_full": _MACOS_X86_BUILD,
     "tensorflow/xla/jax/cpu/build_cpu": _JAX_CPU_BUILD,
     "tensorflow/xla/jax/gpu/build_gpu": _JAX_GPU_BUILD,
     "tensorflow/xla/tensorflow/cpu/build_cpu": _TENSORFLOW_CPU_BUILD,

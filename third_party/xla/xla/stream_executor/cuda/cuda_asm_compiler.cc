@@ -49,16 +49,16 @@ limitations under the License.
 #include "xla/status_macros.h"
 #include "xla/stream_executor/cuda/cuda_status.h"
 #include "xla/stream_executor/cuda/ptx_compiler.h"
+#include "xla/stream_executor/cuda/ptx_compiler_helpers.h"
 #include "xla/stream_executor/cuda/ptx_compiler_support.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/gpu/context.h"
 #include "xla/stream_executor/gpu/gpu_asm_opts.h"
-#include "xla/stream_executor/gpu/gpu_driver.h"
-#include "xla/stream_executor/gpu/gpu_types.h"
 #include "xla/stream_executor/gpu/scoped_activate_context.h"
 #include "xla/stream_executor/semantic_version.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "xla/util.h"
-#include "tsl/platform/cuda_libdevice_path.h"
+#include "tsl/platform/cuda_root_path.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/path.h"
@@ -142,20 +142,22 @@ absl::StatusOr<SemanticVersion> GetToolVersion(std::string_view tool_path) {
 }
 
 absl::StatusOr<absl::Span<const uint8_t>> CompileGpuAsmOrGetCached(
-    int device_ordinal, const char* ptx, GpuAsmOpts compilation_options) {
-  using PtxCacheKey = std::tuple<int, std::string, GpuAsmOpts::PtxOptionsTuple>;
+    stream_executor::StreamExecutor* executor, const char* ptx,
+    GpuAsmOpts compilation_options) {
+  using PtxCacheKey = std::tuple<stream_executor::StreamExecutor*, std::string,
+                                 GpuAsmOpts::PtxOptionsTuple>;
   using PtxCompilerResult = absl::StatusOr<std::vector<uint8_t>>;
   static absl::Mutex ptx_cache_mutex(absl::kConstInit);
   static auto& ptx_cache ABSL_GUARDED_BY(ptx_cache_mutex) =
       *new absl::flat_hash_map<PtxCacheKey, PtxCompilerResult>();
 
   absl::MutexLock lock(&ptx_cache_mutex);
-  PtxCacheKey cache_key{device_ordinal, std::string(ptx),
+  PtxCacheKey cache_key{executor, std::string(ptx),
                         compilation_options.ToTuple()};
   auto it = ptx_cache.find(cache_key);
   if (it == ptx_cache.end()) {
     PtxCompilerResult compiled =
-        CompileGpuAsm(device_ordinal, ptx, compilation_options);
+        CompileGpuAsm(executor, ptx, compilation_options);
     it = ptx_cache.emplace(cache_key, std::move(compiled)).first;
   }
 
@@ -173,15 +175,12 @@ absl::StatusOr<absl::Span<const uint8_t>> CompileGpuAsmOrGetCached(
   return absl::MakeSpan(compiled);
 }
 
-absl::StatusOr<std::vector<uint8_t>> CompileGpuAsm(int device_ordinal,
-                                                   const char* ptx_contents,
-                                                   GpuAsmOpts options) {
-  gpu::GpuDeviceHandle handle;
-  TF_RETURN_IF_ERROR(gpu::GpuDriver::GetDevice(device_ordinal, &handle));
-  int cc_major;
-  int cc_minor;
-  TF_RETURN_IF_ERROR(
-      gpu::GpuDriver::GetComputeCapability(&cc_major, &cc_minor, handle));
+absl::StatusOr<std::vector<uint8_t>> CompileGpuAsm(
+    stream_executor::StreamExecutor* executor, const char* ptx_contents,
+    GpuAsmOpts options) {
+  auto& device_description = executor->GetDeviceDescription();
+  int cc_major = device_description.cuda_compute_capability().major;
+  int cc_minor = device_description.cuda_compute_capability().minor;
   return CompileGpuAsm(cc_major, cc_minor, ptx_contents, options);
 }
 
@@ -344,8 +343,9 @@ absl::StatusOr<std::vector<uint8_t>> CompileGpuAsmUsingPtxAs(
     tsl::Env::Default()->DeleteFile(cubin_path).IgnoreError();
   };
   tsl::SubProcess ptxas_info_dumper;
-  // If the target is sm_90, hard code it to sm_90a so that all instructions
-  // can be used. We don't need the portability that sm_90 gives.
+  // On Hopper, default to sm_90a so that all instructions can be used. But
+  // only sm_90 is forward compatible, so don't use sm_90a with newer hardware:
+  // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#ptx-compatibility
   std::string extension = (cc_major == 9 && cc_minor == 0) ? "a" : "";
   std::vector<std::string> ptxas_args = {
       ptxas_path,
@@ -383,10 +383,9 @@ absl::StatusOr<std::vector<uint8_t>> CompileGpuAsmUsingPtxAs(
           "%s ptxas too old. Falling back to the driver to compile.",
           ptxas_path));
     }
-    if (absl::StrContains(stderr_output, "ptxas fatal") &&
-        absl::StrContains(stderr_output, "Register allocation failed")) {
+    if (IsPtxRegisterAllocationError(stderr_output)) {
       LOG(INFO) << stderr_output;
-      return absl::ResourceExhaustedError("Register allocation failed");
+      return absl::ResourceExhaustedError(stderr_output);
     }
 
     return absl::InternalError(
