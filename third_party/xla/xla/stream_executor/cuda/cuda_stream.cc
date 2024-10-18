@@ -242,6 +242,13 @@ void DestroyStream(StreamExecutor* executor, CUstream stream) {
             << executor;
   }
 }
+
+absl::Status SynchronizeStream(StreamExecutor* executor, CUstream stream) {
+  std::unique_ptr<ActivateContext> activation = executor->Activate();
+  CHECK(stream != nullptr);
+  return cuda::ToStatus(cuStreamSynchronize(stream),
+                        "Could not synchronize CUDA stream");
+}
 }  // namespace
 
 CudaStream::~CudaStream() {
@@ -249,6 +256,10 @@ CudaStream::~CudaStream() {
   executor_->DeallocateStream(this);
 
   DestroyStream(executor_, stream_handle_);
+}
+
+absl::Status CudaStream::BlockHostUntilDone() {
+  return SynchronizeStream(executor_, stream_handle_);
 }
 
 absl::Status CudaStream::Memset32(DeviceMemoryBase* location, uint32_t pattern,
