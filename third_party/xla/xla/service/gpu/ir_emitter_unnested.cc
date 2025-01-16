@@ -96,10 +96,10 @@ limitations under the License.
 #ifdef GOOGLE_CUDA
 #include "xla/stream_executor/cuda/cuda_solver_context.h"
 #endif  // GOOGLE_CUDA
+#include "xla/backends/gpu/codegen/triton/fusion_emitter.h"
 #include "xla/service/gpu/execution_stream_assignment.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/fusions/fusions.h"
-#include "xla/service/gpu/fusions/triton/triton_fusion_emitter.h"
 #include "xla/service/gpu/gpu_conv_runner.h"
 #include "xla/service/gpu/gpu_norm_runner.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
@@ -185,8 +185,7 @@ namespace gpu {
 IrEmitterUnnested::IrEmitterUnnested(IrEmitterContext* ir_emitter_context)
     : IrEmitter(ir_emitter_context, /*is_nested=*/false),
       send_recv_events_(std::make_shared<SendRecvAsyncEvents>()),
-      copy_events_(std::make_shared<CopyThunk::AsyncEvents>()),
-      elemental_emitter_(*ir_emitter_context, &b_) {}
+      copy_events_(std::make_shared<CopyThunk::AsyncEvents>()) {}
 
 std::unique_ptr<IrEmitterUnnested> IrEmitterUnnested::Create(
     IrEmitterContext* ir_emitter_context) {
