@@ -18,6 +18,7 @@ limitations under the License.
 
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/utils.h"
+#include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -132,6 +133,11 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
     explicit Iterator(const Params& params)
         : DatasetIterator<Dataset>(params) {}
 
+    absl::Status Initialize(IteratorContext* ctx) override {
+      LogFilenames(dataset()->filenames_);
+      return absl::OkStatus();
+    }
+
     bool SymbolicCheckpointCompatible() const override { return true; }
 
     absl::Status GetNextInternal(IteratorContext* ctx,
@@ -155,7 +161,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
             return absl::OkStatus();
           }
           out_tensors->pop_back();
-          if (!errors::IsOutOfRange(s)) {
+          if (!absl::IsOutOfRange(s)) {
             // In case of other errors e.g., DataLoss, we still move forward
             // the file index so that it works with ignore_errors.
             // Otherwise the same file will repeat.
@@ -197,7 +203,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
             *end_of_sequence = false;
             return absl::OkStatus();
           }
-          if (!errors::IsOutOfRange(s)) {
+          if (!absl::IsOutOfRange(s)) {
             // In case of other errors e.g., DataLoss, we still move forward
             // the file index so that it works with ignore_errors.
             // Otherwise the same file will repeat.
@@ -333,7 +339,6 @@ void TFRecordDatasetOp::MakeDataset(OpKernelContext* ctx,
     is_s3_fs &= absl::StartsWith(filenames[i], kS3FsPrefix);
     metrics::RecordTFDataFilename(kDatasetType, filenames[i]);
   }
-  LogFilenames(filenames);
 
   tstring compression_type;
   OP_REQUIRES_OK(ctx, ParseScalarArgument<tstring>(ctx, kCompressionType,

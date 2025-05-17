@@ -717,7 +717,7 @@ class XlaSparseDenseMatmulGradWithCsrInputBase : public XlaOpKernel {
     builder->SetFrontendAttributes(tuple_frontend_attributes);
 
     // Updated embedding table.
-    for (int i = 0; i < tables_shape.tuple_shapes_size(); ++i) {
+    for (int i = 0; i < tables_shape.tuple_shapes().size(); ++i) {
       ctx->SetOutput(i, xla::GetTupleElement(updated_tables, i));
     }
 
@@ -895,7 +895,7 @@ class XlaSparseDenseMatmulGradWithCsrInputOp : public XlaOpKernel {
     builder->SetFrontendAttributes(tuple_frontend_attributes);
 
     // Updated embedding table.
-    for (int i = 0; i < tables_shape.tuple_shapes_size(); ++i) {
+    for (int i = 0; i < tables_shape.tuple_shapes().size(); ++i) {
       ctx->SetOutput(i, xla::GetTupleElement(updated_tables, i));
     }
 
@@ -1051,6 +1051,7 @@ class XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputBase
       XlaOpKernelContext* ctx, xla::XlaBuilder* builder, int32_t input_size,
       int32_t feature_width) {
     xla::XlaOp weights = ctx->Input("weights");
+    xla::XlaOp preserved_weights = ctx->Input("preserved_weights");
     xla::XlaOp activation_gradients = ctx->Input("activation_gradients");
     xla::XlaOp valencies = ctx->Input("preserved_valencies");
     xla::XlaOp vectors = ctx->Input("preserved_vectors");
@@ -1070,8 +1071,9 @@ class XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputBase
 
     std::vector<xla::XlaOp> vjp_args;
     if (num_weights_ > 0) {
-      xla::XlaOp broadcasted_weights = xla::Broadcast(weights, {input_size});
-      vjp_args = {valencies, vectors, broadcasted_weights,
+      xla::XlaOp broadcasted_preserved_weights =
+          xla::Broadcast(preserved_weights, {input_size});
+      vjp_args = {valencies, vectors, broadcasted_preserved_weights,
                   activation_gradients};
     } else {
       vjp_args = {valencies, vectors, activation_gradients};
@@ -1198,12 +1200,12 @@ class XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputBase
     // Get the shape of the gradient.
     OP_REQUIRES_VALUE(xla::Shape activation_shape, ctx,
                       ctx->InputXlaShape("activation_gradients"));
-    OP_REQUIRES(
-        ctx,
-        activation_shape.is_static() && activation_shape.dimensions_size() == 2,
-        absl::InvalidArgumentError(absl::StrCat(
-            "activations input has non static or non-rank 2 shape: ",
-            activation_shape.ToString())));
+    OP_REQUIRES(ctx,
+                activation_shape.is_static() &&
+                    activation_shape.dimensions().size() == 2,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "activations input has non static or non-rank 2 shape: ",
+                    activation_shape.ToString())));
     OP_REQUIRES_VALUE(int64_t num_sparsecores_per_device, ctx,
                       GetSparseCoresPerLogicalDevice());
     int64_t num_samples_per_chip = activation_shape.dimensions(0);
