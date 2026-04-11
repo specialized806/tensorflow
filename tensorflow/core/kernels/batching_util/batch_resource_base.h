@@ -64,6 +64,7 @@ struct BatchResourceOptions {
   MixedPriorityBatchingPolicy mixed_priority_batching_policy;
   bool enable_priority_aware_batch_scheduler;
   bool enable_priority_aware_batch_scheduler_resplit;
+  int32_t num_warmup_batch_threads;
 };
 
 // Base class for resource that encapsulating the state and logic for batching
