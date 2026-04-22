@@ -1488,6 +1488,7 @@ cuda_py_strict_test(
 py_library(
     name = "ctc_ops",
     srcs = ["ctc_ops.py"],
+    lazy_imports = True,
     strict_deps = True,
     deps = [
         ":array_ops",
