@@ -218,6 +218,11 @@ class TensorSliceDatasetOp::Dataset : public DatasetBase {
       if (ctx->restored_element_count().has_value()) {
         return global_shuffle_iterator_.Restore(prefix(), ctx, reader);
       }
+      if (split_provider_ == nullptr) {
+        return absl::FailedPreconditionError(
+            "`Initialize` should be called before restoring from tf.data "
+            "checkpoints.");
+      }
       return split_provider_->Restore(
           [this](const std::string& key) { return full_name(key); }, reader);
     }
