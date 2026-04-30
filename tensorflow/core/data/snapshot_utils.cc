@@ -949,6 +949,12 @@ absl::Status CustomReader::SnappyUncompress(
   }
 
   int num_tensors = metadata->tensor_metadata_size();
+  if (num_tensors != simple_tensor_mask_.size()) {
+    return absl::DataLossError(
+        absl::StrCat("Number of tensors in metadata (", num_tensors,
+                     ") does not match simple_tensor_mask_.size() (",
+                     simple_tensor_mask_.size(), ")"));
+  }
   std::vector<tsl::iovec> iov(num_tensors);
   int index = 0;
   int64_t total_size = 0;
