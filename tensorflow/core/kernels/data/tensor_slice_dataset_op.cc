@@ -185,6 +185,11 @@ class TensorSliceDatasetOp::Dataset : public DatasetBase {
       }
 
       Tensor split;
+      if (split_provider_ == nullptr) {
+        return absl::FailedPreconditionError(
+            "`Initialize` should be called before calling `GetNext` on an "
+            "Iterator.");
+      }
       TF_RETURN_IF_ERROR(split_provider_->GetNext(&split, end_of_sequence));
       if (*end_of_sequence) {
         return absl::OkStatus();
