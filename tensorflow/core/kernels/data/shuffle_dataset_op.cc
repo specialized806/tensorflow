@@ -385,6 +385,11 @@ class ShuffleDatasetOpBase::ShuffleDatasetBase : public DatasetBase {
         TF_RETURN_IF_ERROR(reader->ReadScalar(
             this->prefix(), absl::StrJoin(std::make_tuple(kSlicesEnd, i), "_"),
             &end));
+        if (start > end) {
+          return absl::InvalidArgumentError(
+              absl::StrCat("Slice start (", start,
+                           ") cannot be greater than slice end (", end, ")."));
+        }
         int64_t reached_end_of_sequence;
         TF_RETURN_IF_ERROR(reader->ReadScalar(
             prefix(),
