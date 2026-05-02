@@ -324,11 +324,6 @@ class RangeDatasetOp::Dataset : public DatasetBase {
 
     absl::Status SaveInternal(SerializationContext* ctx,
                               IteratorStateWriter* writer) override {
-      if (split_provider_ == nullptr && counter_ == nullptr) {
-        return absl::FailedPreconditionError(
-            "`Initialize` should be called before saving/restoring from "
-            "tf.data checkpoints.");
-      }
       if (split_provider_) {
         TF_RETURN_IF_ERROR(
             writer->WriteScalar(prefix(), kHasSplitProvider, true));
@@ -347,11 +342,6 @@ class RangeDatasetOp::Dataset : public DatasetBase {
 
     absl::Status RestoreInternal(IteratorContext* ctx,
                                  IteratorStateReader* reader) override {
-      if (split_provider_ == nullptr && counter_ == nullptr) {
-        return absl::FailedPreconditionError(
-            "`Initialize` should be called before saving/restoring from "
-            "tf.data checkpoints.");
-      }
       if (ctx->restored_element_count().has_value()) {
         return global_shuffle_iterator_.Restore(prefix(), ctx, reader);
       }

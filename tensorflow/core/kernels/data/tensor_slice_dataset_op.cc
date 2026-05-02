@@ -212,11 +212,6 @@ class TensorSliceDatasetOp::Dataset : public DatasetBase {
 
     absl::Status SaveInternal(SerializationContext* ctx,
                               IteratorStateWriter* writer) override {
-      if (split_provider_ == nullptr) {
-        return absl::FailedPreconditionError(
-            "`Initialize` should be called before saving/restoring from "
-            "tf.data checkpoints.");
-      }
       TF_RETURN_IF_ERROR(split_provider_->Save(
           [this](const std::string& key) { return full_name(key); }, writer));
       TF_RETURN_IF_ERROR(global_shuffle_iterator_.Save(prefix(), ctx, writer));
@@ -225,13 +220,13 @@ class TensorSliceDatasetOp::Dataset : public DatasetBase {
 
     absl::Status RestoreInternal(IteratorContext* ctx,
                                  IteratorStateReader* reader) override {
-      if (split_provider_ == nullptr) {
-        return absl::FailedPreconditionError(
-            "`Initialize` should be called before saving/restoring from "
-            "tf.data checkpoints.");
-      }
       if (ctx->restored_element_count().has_value()) {
         return global_shuffle_iterator_.Restore(prefix(), ctx, reader);
+      }
+      if (split_provider_ == nullptr) {
+        return absl::FailedPreconditionError(
+            "`Initialize` should be called before restoring from tf.data "
+            "checkpoints.");
       }
       return split_provider_->Restore(
           [this](const std::string& key) { return full_name(key); }, reader);

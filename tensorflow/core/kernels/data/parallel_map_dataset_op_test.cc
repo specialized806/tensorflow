@@ -15,7 +15,6 @@ limitations under the License.
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/data/dataset_test_base.h"
 #include "tensorflow/core/data/name_utils.h"
-#include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 
 namespace tensorflow {

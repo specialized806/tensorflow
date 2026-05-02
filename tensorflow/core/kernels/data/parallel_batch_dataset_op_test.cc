@@ -15,7 +15,6 @@ limitations under the License.
 #include "tensorflow/core/kernels/data/parallel_batch_dataset_op.h"
 
 #include "tensorflow/core/data/dataset_test_base.h"
-#include "tensorflow/core/framework/dataset.h"
 
 namespace tensorflow {
 namespace data {
