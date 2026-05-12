@@ -63,8 +63,7 @@ class ComposableSplitterBase : public Splitter {
   //   file_prefix: string prefix of the filepath. The writer will automatically
   //     attach a `.pb` or `.cpb` (chunked pb) suffix depending on whether the
   //     proto is split.
-  // Returns the full output path.
-  absl::StatusOr<std::string> Write(std::string file_prefix) override;
+  absl::Status Write(std::string file_prefix) override;
   // The bool field record whether it's saved as a chunked protobuf (true) or
   // regular protobuf (false).
   absl::StatusOr<std::tuple<std::string, bool>> WriteToString();
